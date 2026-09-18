@@ -1,0 +1,85 @@
+name: Build PytunaOS ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_name:
+        description: "Nome base da ISO"
+        required: false
+        default: "pytunaos"
+        type: string
+  schedule:
+    - cron: "0 4 * * 1"   # semanal, segunda 04:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mklive
+        uses: actions/checkout@v4
+
+      - name: Fetch pytunaOS public signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p keys
+          curl -fsSL \
+            "https://raw.githubusercontent.com/pytunaOS/repository/main/keys/pytuna.pem" \
+            -o keys/pytuna.pem
+          test -s keys/pytuna.pem
+          echo "Chave pública importada:"
+          openssl rsa -pubin -in keys/pytuna.pem -noout -text | head -n 2
+
+      - name: Install host dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xbps qemu-user-static parted mtools squashfs-tools \
+            xorriso isolinux syslinux-common
+
+      - name: Build x86_64 glibc live ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          # -a x86_64  : somente x86_64/glibc (sem musl, sem outras archs)
+          # -r ...     : repo oficial Void + repo suplementar pytunaOS
+          # -p "..."   : pacotes próprios da distro + keyring
+          sudo ./mklive.sh \
+            -a x86_64 \
+            -r https://repo-default.voidlinux.org/current \
+            -r https://raw.githubusercontent.com/pytunaOS/repository/main/x86_64 \
+            -p "pytuna-base pytuna-keys void-repo-nonfree" \
+            -T "PytunaOS Live"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          ISO="$(ls *.iso | head -n1)"
+          sha256sum "$ISO" > "$ISO.sha256"
+          echo "iso=$ISO" >> "$GITHUB_ENV"
+
+      - name: Upload ISO as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytunaos-iso
+          path: |
+            *.iso
+            *.iso.sha256
+          retention-days: 14
+
+      - name: Publish to GitHub Release
+        if: github.event_name == 'schedule' || inputs.iso_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.run_number }}-${{ github.event_name }}
+          name: "PytunaOS ISO build ${{ github.run_number }}"
+          files: |
+            *.iso
+            *.iso.sha256
+          prerelease: true
